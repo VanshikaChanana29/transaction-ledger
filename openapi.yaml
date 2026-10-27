@@ -1,0 +1,256 @@
+openapi: 3.0.3
+info:
+  title: Transaction Ledger API
+  version: 1.0.0
+  description: |
+    Accounts, credit/debit transactions, balances and transaction history.
+
+    - Amounts are JSON numbers with at most 2 decimal places, stored as exact decimals.
+    - Transactions are immutable: there is no way to edit or delete one.
+    - `reference_id` is unique per account; resubmitting it returns `409` and changes nothing.
+    - Errors use one envelope: `{ "error": { "code", "message", "details" } }`.
+servers:
+  - url: /api
+tags:
+  - name: Accounts
+  - name: Transactions
+
+paths:
+  /accounts:
+    post:
+      tags: [Accounts]
+      summary: Create an account
+      description: The balance always starts at 0. Sending `balance`, `id` or `created_at` is rejected.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 100, example: Asha Rao }
+      responses:
+        '201':
+          description: Created
+          headers:
+            Location: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '400': { $ref: '#/components/responses/ValidationError' }
+
+  /accounts/{accountId}:
+    get:
+      tags: [Accounts]
+      summary: Get an account
+      parameters: [{ $ref: '#/components/parameters/accountId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Account' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /accounts/{accountId}/balance:
+    get:
+      tags: [Accounts]
+      summary: Get the current balance
+      parameters: [{ $ref: '#/components/parameters/accountId' }]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  account_id: { type: string, format: uuid }
+                  balance: { type: number, example: 150 }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /accounts/{accountId}/transactions:
+    post:
+      tags: [Transactions]
+      summary: Add a transaction
+      description: |
+        `credit` adds to the balance; `debit` subtracts and is rejected with `422` if the balance is too low.
+        The transaction and the balance change are committed together or not at all.
+      parameters: [{ $ref: '#/components/parameters/accountId' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, amount, description, reference_id]
+              properties:
+                type: { type: string, enum: [credit, debit] }
+                amount: { type: number, minimum: 0.01, maximum: 1000000000, example: 50 }
+                description: { type: string, maxLength: 255, example: October salary }
+                reference_id: { type: string, maxLength: 100, example: salary-2026-10 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  transaction: { $ref: '#/components/schemas/Transaction' }
+                  balance: { type: number, description: Account balance after this transaction, example: 150 }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: A transaction with this reference_id already exists for the account. Nothing was changed.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Error'
+                example:
+                  error:
+                    code: DUPLICATE_TRANSACTION
+                    message: A transaction with reference_id "salary-2026-10" already exists for this account. No new transaction was created.
+                    details: { transaction: { id: '…', type: credit, amount: 50, reference_id: salary-2026-10 } }
+        '422':
+          description: Insufficient balance for the debit. Nothing was changed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error:
+                  code: INSUFFICIENT_BALANCE
+                  message: Insufficient balance. The transaction was rejected and the balance is unchanged.
+                  details: { balance: 100, amount: 150 }
+    get:
+      tags: [Transactions]
+      summary: Transaction history (latest first)
+      parameters:
+        - $ref: '#/components/parameters/accountId'
+        - name: type
+          in: query
+          description: Omit to get both credits and debits.
+          schema: { type: string, enum: [credit, debit] }
+        - name: page
+          in: query
+          schema: { type: integer, minimum: 1, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 10 }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Transaction' }
+                  pagination:
+                    type: object
+                    properties:
+                      page: { type: integer, example: 1 }
+                      limit: { type: integer, example: 10 }
+                      total_records: { type: integer, example: 23 }
+                      total_pages: { type: integer, example: 3 }
+        '400': { $ref: '#/components/responses/ValidationError' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /accounts/{accountId}/transactions/{transactionId}:
+    parameters:
+      - $ref: '#/components/parameters/accountId'
+      - name: transactionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Transactions]
+      summary: Get one transaction
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Transaction' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Transactions]
+      summary: Not allowed (transactions are immutable)
+      responses:
+        '405': { $ref: '#/components/responses/Immutable' }
+    patch:
+      tags: [Transactions]
+      summary: Not allowed (transactions are immutable)
+      responses:
+        '405': { $ref: '#/components/responses/Immutable' }
+    delete:
+      tags: [Transactions]
+      summary: Not allowed (transactions are immutable)
+      responses:
+        '405': { $ref: '#/components/responses/Immutable' }
+
+components:
+  parameters:
+    accountId:
+      name: accountId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  schemas:
+    Account:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, example: Asha Rao }
+        balance: { type: number, example: 0 }
+        created_at: { type: string, format: date-time }
+    Transaction:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        type: { type: string, enum: [credit, debit] }
+        amount: { type: number, example: 50 }
+        description: { type: string, example: October salary }
+        reference_id: { type: string, example: salary-2026-10 }
+        created_at: { type: string, format: date-time }
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: { type: object }
+
+  responses:
+    ValidationError:
+      description: Missing or invalid fields
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error:
+              code: VALIDATION_ERROR
+              message: Some fields are missing or invalid.
+              details: { amount: [Amount must be greater than 0] }
+    NotFound:
+      description: Account (or transaction) not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: NOT_FOUND, message: Account not found. }
+    Immutable:
+      description: Transactions cannot be edited or deleted
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: TRANSACTION_IMMUTABLE, message: Transactions cannot be edited or deleted. }

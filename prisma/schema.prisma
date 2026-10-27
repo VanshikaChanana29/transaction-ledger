@@ -1,0 +1,49 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TransactionType {
+  credit
+  debit
+
+  @@map("transaction_type")
+}
+
+/// The balance is a running total kept in step with the transactions table:
+/// every insert into `transactions` updates it in the same database transaction.
+/// A CHECK constraint (see the migration) makes a negative balance impossible.
+model Account {
+  id           String        @id @default(uuid()) @db.Uuid
+  name         String        @db.VarChar(100)
+  balance      Decimal       @default(0) @db.Decimal(18, 2)
+  createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  transactions Transaction[]
+
+  @@map("accounts")
+}
+
+/// Append-only. A trigger (see the migration) rejects UPDATE and DELETE at the
+/// database level, so no code path, not even a bug or a manual query, can rewrite history.
+model Transaction {
+  id          String          @id @default(uuid()) @db.Uuid
+  /// Insertion order. Breaks ties between rows with the same created_at so
+  /// "latest first" is stable across pages. Never exposed by the API.
+  seq         BigInt          @unique @default(autoincrement())
+  accountId   String          @map("account_id") @db.Uuid
+  account     Account         @relation(fields: [accountId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  type        TransactionType
+  amount      Decimal         @db.Decimal(18, 2)
+  description String          @db.VarChar(255)
+  referenceId String          @map("reference_id") @db.VarChar(100)
+  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  // reference_id is unique per account, not globally.
+  @@unique([accountId, referenceId])
+  @@index([accountId, createdAt(sort: Desc), seq(sort: Desc)])
+  @@map("transactions")
+}
